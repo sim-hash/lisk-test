@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 
+# Merges OpenCL source files into a single file for compilation
+# equivalent to what gpu.rs does.
+#
+# Example usages:
+#   ./merge-kernel.py > kernel.cl
+#   ./merge-kernel.py | cat -n
+
 import sys
 
 files = [
-    "types.cl",
+    "blake2b.cl",
     "curve25519-constants.cl",
     "curve25519-constants2.cl",
     "curve25519.cl",
-    "sha/inc_hash_functions.cl",
-    "sha/sha256.cl",
-    "sha/sha512.cl",
-    "sha_bindings.cl",
-    "bip39.cl",
-    "lisk.cl",
-    "entry.cl",
+    "entry.cl"
 ]
 
 for f_name in files:

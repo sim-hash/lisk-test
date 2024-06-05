@@ -1,105 +1,84 @@
-// inline void print_bytes(const uchar *data, size_t len) {
-// 	for (size_t i = 0; i < len; ++i) {
-// 		printf("%.2x", data[i]);
-// 	}
-// 	printf("\n");
-// }
+inline void generate_checksum (uchar checksum[5], const uchar pubkey[32]) {
+	// For some reason, this doesn't work when put in generate_pubkey.
+	blake2b_state state;
+	blake2b_init (&state, 5);
+	blake2b_update (&state, (__private uchar *) pubkey, 32);
+	blake2b_final (&state, (__private uchar *) checksum, 5);
+}
 
-// inline void print_words(const u32 *data, size_t len) {
-// 	for (size_t i = 0; i < len; ++i) {
-// 		printf("%.8x ", data[i]);
-// 	}
-// 	printf("\n");
-// }
-
-/**
- * result:
- *     The 32 byte key material that is written once a matching address was found.
- *     This is all zero by default and any non-zero result indicates a match. All local
- *     threads write to the same global memory, so we can get corrupted results if
- *     multiple threads find a match. This usually does not happen for hard enough
- *     tasks but we need to double check the result in the caller code for this reason.
- * key_material_base:
- *     The root input key material. This is 32 bytes from a cryptographically secure
- *     random number generator. The thread ID is XORed into the last 8 bytes of this.
- * max_address_value:
- *     The largest address value that is considered a match, e.g. 999999999999 when
- *     looking for 12 digit addresses.
- * generate_key_type:
- *     0 means Lisk passphrase encoded as 16 bytes of BIP39 entropy
- *     1 means Ed25519 private key (seed) encoded as 32 bytes
- *     2 means The curve point of the blinding factor (currently unsupported; see https://github.com/PlasmaPower/nano-vanity for proper usage)
- */
-__kernel void generate_pubkey(
-	__global uchar *result,
-	__constant uchar *key_material_base,
-	ulong max_address_value,
-	uchar generate_key_type
-) {
-	uchar key_material[32];
+__kernel void generate_pubkey (__global unsigned long *result, __global uchar *key_root, __global uchar *pub_req, __global uchar *pub_mask, uchar prefix_len, uchar generate_key_type, __global uchar *public_offset) {
+	size_t const thread = get_global_id (0);
+	uchar key[32];
 	for (size_t i = 0; i < 32; i++) {
-		key_material[i] = key_material_base[i];
+		key[i] = key_root[i];
 	}
+	*((size_t *) key) += thread;
 
-	uint64_t const thread_id = get_global_id(0);
-	// For passphrases in key_material, the first 16 bytes are ignored.
-	// We XOR the big endian encoded thread ID into the last 8 bytes.
-	key_material[16] ^= (thread_id >> (7*8)) & 0xFF;
-	key_material[17] ^= (thread_id >> (6*8)) & 0xFF;
-	key_material[18] ^= (thread_id >> (5*8)) & 0xFF;
-	key_material[19] ^= (thread_id >> (4*8)) & 0xFF;
-	key_material[20] ^= (thread_id >> (3*8)) & 0xFF;
-	key_material[21] ^= (thread_id >> (2*8)) & 0xFF;
-	key_material[22] ^= (thread_id >> (1*8)) & 0xFF;
-	key_material[23] ^= (thread_id >> (0*8)) & 0xFF;
+//	if (generate_key_type == 1) {
+//        printf("Generate_key_type 1");
+//		// seed
+//		blake2b_state keystate;
+//		blake2b_init (&keystate, sizeof (key));
+//		blake2b_update (&keystate, key, sizeof (key));
+//		uint32_t idx = 0;
+//		blake2b_update (&keystate, (uchar *) &idx, 4);
+//		blake2b_final (&keystate, key, sizeof (key));
+//	}
 
-	uchar menomic_hash[32];
-	uchar *key;
-	if (generate_key_type == 0) {
-		// lisk passphrase
-		bip39_entropy_to_mnemonic(key_material+16, menomic_hash);
-		key = menomic_hash;
-	} else {
-		// privkey or extended privkey
-		key = key_material;
-	}
+	blake2b_state state;
 	bignum256modm a;
 	ge25519 ALIGN(16) A;
-	if (generate_key_type != 2) {
-		u32 in[32] = { 0 }; // must be 128 bytes zero-filled for sha512_update to work
+
+//	if (generate_key_type != 2) {
+//        printf("Generate_key_type != 2");
+		// key is an ed25519 private key
 		uchar hash[64];
-
-		sha512_ctx_t hasher;
-		sha512_init (&hasher);
-
-		to_32bytes_sha2_input(in, key);
-		// print_bytes(in_data, 32);
-		// print_words(in, 8);
-		sha512_update(&hasher, in, 32);
-
-		sha512_final(&hasher);
-		from_sha512_result(hash, hasher.h);
-
-		// printf("(%i) ", hasher.len);
-		// print_bytes(hash, 64);
-
+		blake2b_init (&state, sizeof (hash));
+		blake2b_update (&state, key, 32);
+		blake2b_final (&state, hash, sizeof (hash));
 		hash[0] &= 248;
 		hash[31] &= 127;
 		hash[31] |= 64;
 		expand256_modm(a, hash, 32);
-	} else {
-		expand256_modm(a, key, 32);
-	}
+//	} else {
+//        printf(" != 2 else");
+//		// key is a scalar
+//		expand256_modm(a, key, 32);
+//	}
+
 	ge25519_scalarmult_base_niels(&A, a);
+
+//	if (generate_key_type == 2) {
+//
+//        printf("= 2");
+//		uchar public_offset_copy[32];
+//		for (size_t i = 0; i < 32; i++) {
+//			public_offset_copy[i] = public_offset[i];
+//		}
+//		ge25519 ALIGN(16) public_offset_curvepoint;
+//		ge25519_unpack_vartime(&public_offset_curvepoint, public_offset_copy);
+//		ge25519_add(&A, &A, &public_offset_curvepoint);
+//	}
 
 	uchar pubkey[32];
 	ge25519_pack(pubkey, &A);
-
-	uint64_t address = pubkey_to_address(pubkey);
-
-	if (address <= max_address_value) {
-		for (uchar i = 0; i < 32; i++) {
-			result[i] = key_material[i];
+	uchar pubkey_prefix_len = prefix_len;
+	if (pubkey_prefix_len > 32) {
+		pubkey_prefix_len = 32;
+	}
+	for (uchar i = 0; i < pubkey_prefix_len; i++) {
+		if ((pubkey[i] & pub_mask[i]) != pub_req[i]) {
+			return;
 		}
 	}
+	if (prefix_len > 32) {
+		uchar checksum[5];
+		generate_checksum (checksum, pubkey);
+		for (uchar i = 32; i < prefix_len; i++) {
+			if ((checksum[4 - (i - 32)] & pub_mask[i]) != pub_req[i]) {
+				return;
+			}
+		}
+	}
+	*result = thread;
 }

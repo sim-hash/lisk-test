@@ -1,4 +1,6 @@
 use std::f64;
+use std::iter;
+use std::ops::Add;
 use std::process;
 use std::sync::atomic;
 use std::sync::atomic::AtomicUsize;
@@ -6,63 +8,59 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+extern crate curve25519_dalek;
+use curve25519_dalek::edwards::CompressedEdwardsY;
+
+extern crate blake2;
+extern crate byteorder;
 extern crate clap;
 extern crate digest;
-extern crate ed25519_dalek;
 extern crate hex;
-extern crate num_bigint;
 extern crate num_cpus;
-extern crate sha2;
+extern crate algonaut;
+extern crate base32;
 
 extern crate rand;
-use rand::{OsRng, Rng};
+use rand::rngs::OsRng;
+use rand::RngCore;
+
+extern crate num_bigint;
+use num_bigint::BigInt;
 
 extern crate num_traits;
-use num_traits::ToPrimitive;
+use num_traits::{ToPrimitive, Zero};
 
 #[cfg(feature = "gpu")]
 extern crate ocl;
 
-mod cpu;
-use cpu::bip39::entropy_to_mnemonic;
-
 mod derivation;
-use derivation::{cut_last_16, pubkey_to_address, secret_to_pubkey, GenerateKeyType};
+use derivation::{pubkey_to_address, secret_to_pubkey, GenerateKeyType, ADDRESS_ALPHABET};
 
 mod pubkey_matcher;
-use pubkey_matcher::{max_address, PubkeyMatcher};
+use pubkey_matcher::PubkeyMatcher;
 
+#[cfg(feature = "gpu")]
+mod gpu_impl;
 
-extern crate algonaut;
-extern crate base32;
+mod gpu;
+use gpu::{Gpu, GpuOptions};
 
 use algonaut::transaction::account::Account;
 
-#[cfg(feature = "gpu")]
-mod gpu;
-#[cfg(feature = "gpu")]
-use gpu::Gpu;
-
-#[cfg(not(feature = "gpu"))]
-struct Gpu;
-
-#[cfg(not(feature = "gpu"))]
-impl Gpu {
-    pub fn new(
-        _platform_idx: usize,
-        _device_idx: usize,
-        _threads: usize,
-        _local_work_size: Option<usize>,
-        _max_address_value: u64,
-        _generate_key_type: GenerateKeyType,
-    ) -> Result<Gpu, String> {
-        eprintln!("GPU support has been disabled at compile time.");
-        eprintln!("Rebuild with \"--features gpu\" to enable GPU support.");
-        process::exit(1);
-    }
-
-    pub fn compute(&mut self, _key_root: &[u8]) -> Result<Option<[u8; 32]>, String> {
-        unreachable!()
+fn char_byte_mask(ch: char) -> (u8, u8) {
+    if ch == '.' || ch == '*' {
+        (0, 0)
+    } else if ch == '#' {
+        (0, (1 << 5) - (1 << 3))
+    } else {
+        let lookup = ADDRESS_ALPHABET.iter().position(|&c| (c as char) == ch);
+        match lookup {
+            Some(p) => (p as u8, (1 << 5) - 1),
+            None => {
+                eprintln!("Invalid character in prefix: {:?}", ch);
+                process::exit(1);
+            }
+        }
     }
 }
 
@@ -76,20 +74,24 @@ fn print_solution(
         println!(
             "{} {}",
             hex::encode_upper(&secret_key_material as &[u8]),
-            pubkey_to_address(&public_key),
+            pubkey_to_address(public_key),
         );
     } else {
         match secret_key_type {
-            GenerateKeyType::LiskPassphrase => println!(
-                "Found matching account!\nPrivate Key: {}\nAddress:     {}",
-                String::from_utf8(entropy_to_mnemonic(cut_last_16(&secret_key_material))).unwrap(),
-                full_address(pubkey_to_address(&public_key)),
-            ),
             GenerateKeyType::PrivateKey => println!(
-                "Found matching account!\nPrivate Key: {}{}\nAddress:     {}",
+                "\nFound matching account!\nPrivate Key: {}\nAddress:     {}",
                 hex::encode_upper(&secret_key_material as &[u8]),
-                hex::encode_upper(&public_key),
-                full_address(pubkey_to_address(&public_key)),
+                pubkey_to_address(public_key),
+            ),
+            GenerateKeyType::Seed => println!(
+                "\nFound matching account!\nSeed:    {}\nAddress: {}",
+                hex::encode_upper(&secret_key_material as &[u8]),
+                pubkey_to_address(public_key),
+            ),
+            GenerateKeyType::ExtendedPrivateKey(_) => println!(
+                "\nFound matching account!\nExtended private key: {}\nAddress:              {}",
+                hex::encode_upper(&secret_key_material as &[u8]),
+                pubkey_to_address(public_key),
             ),
         }
     }
@@ -105,21 +107,13 @@ struct ThreadParams {
     matcher: Arc<PubkeyMatcher>,
 }
 
-fn full_address(address: u64) -> String {
-    return format!("{}L", address);
-}
-
 fn check_solution(params: &ThreadParams, key_material: [u8; 32]) -> bool {
+    let public_key = secret_to_pubkey(key_material, params.generate_key_type);
 
-    let matches = params.matcher.matches(secret_to_pubkey(key_material));
+    let wallet = Account::from_seed(key_material);
 
+    let matches = params.matcher.starts_with(wallet.address().to_string());
     if matches {
-        let wallet = Account::from_seed(key_material);
-
-        if !params.matcher.starts_with(wallet.address().to_string()) {
-            return false;
-        }
-
         println!();
         println!(
             "Found matching account!\nPrivate Key: {:?} \nAddress: {} \nMnemonic: {}",
@@ -129,11 +123,23 @@ fn check_solution(params: &ThreadParams, key_material: [u8; 32]) -> bool {
         );
         println!();
 
-        // TODO remove this
+//        println!(" BEGIN  ============================================================================");
+//        println!("\n");
+//        println!("Public key {:?}", public_key);
+//        println!("Found matching account!\nPrivate Key: {:?} \nAddress: {} \nMnemonic: {}", wallet.seed(), wallet.address(), wallet.mnemonic());
+//        println!("\n");
+//        println!(" END    ============================================================================");
+//
         if params.output_progress {
             eprintln!("");
         }
-
+        
+//        print_solution(
+//            key_material,
+//            params.generate_key_type,
+//            public_key,
+//            params.simple_output,
+//        );
         if params.limit != 0
             && params.found_n.fetch_add(1, atomic::Ordering::Relaxed) + 1 >= params.limit
         {
@@ -141,22 +147,32 @@ fn check_solution(params: &ThreadParams, key_material: [u8; 32]) -> bool {
         }
     }
     matches
+}
 
+
+//fn check_solution(params: &ThreadParams, key_material: [u8; 32]) -> bool {
 //    let public_key = secret_to_pubkey(key_material, params.generate_key_type);
-//
-//
-//
 //    let matches = params.matcher.matches(&public_key);
-//    if matches {
+//
+//    let wallet = Account::from_seed(key_material);
+//    if params.matcher.starts_with(wallet.address().to_string()) {
+//
+//        println!("============================================================================");
+//        println!("\n");
+//        println!("Public key {:?}", public_key);
+//        println!("Found matching account!\nPrivate Key: {:?} \nAddress: {} \nMnemonic: {}", wallet.seed(), wallet.address(), wallet.mnemonic());
+//        println!("\n");
+//        println!("============================================================================");
+//
 //        if params.output_progress {
 //            eprintln!("");
 //        }
-//        print_solution(
-//            key_material,
-//            params.generate_key_type,
-//            public_key,
-//            params.simple_output,
-//        );
+////        print_solution(
+////            key_material,
+////            params.generate_key_type,
+////            public_key,
+////            params.simple_output,
+////        );
 //        if params.limit != 0
 //            && params.found_n.fetch_add(1, atomic::Ordering::Relaxed) + 1 >= params.limit
 //        {
@@ -164,93 +180,211 @@ fn check_solution(params: &ThreadParams, key_material: [u8; 32]) -> bool {
 //        }
 //    }
 //    matches
-}
+//}
 
 fn main() {
-    let args = clap::App::new("lisk-vanity")
+    let args = clap::App::new("nano-vanity")
         .version(env!("CARGO_PKG_VERSION"))
-        .author("Simon Warta <simon@warta.it>")
-        .about("Generate short Lisk addresses")
+        .author("Lee Bousfield <ljbousfield@gmail.com>")
+        .about("Generate NANO cryptocurrency addresses with a given prefix")
         .arg(
-            clap::Arg::with_name("length")
-                .value_name("LENGTH")
-                .default_value("14")
+            clap::Arg::with_name("prefix")
+                .value_name("PREFIX")
                 .required_unless("suffix")
-                .help("The max length for the address"),
-        )
-        .arg(
-            clap::Arg::with_name("generate_keypair")
-                .short("k")
-                .long("generate-keypair")
-                .help("Generate a key pair instead of a passphrase"),
-        )
-        .arg(
-            clap::Arg::with_name("cpu_threads")
+                .help("The prefix for the address"),
+        ).arg(
+            clap::Arg::with_name("suffix")
+                .short("s")
+                .long("suffix")
+                .value_name("SUFFIX")
+                .help("The suffix for the address (characters are ordered normally)"),
+        ).arg(
+            clap::Arg::with_name("generate_seed")
+                .long("generate-seed")
+                .help("Generate a seed instead of a private key"),
+        ).arg(
+            clap::Arg::with_name("threads")
                 .short("t")
-                .long("cpu-threads")
+                .long("threads")
                 .value_name("N")
-                .help("The number of CPU threads to use [default: number of cores minus one]"),
-        )
-        .arg(
+                .help("The number of threads to use [default: number of cores minus one]"),
+        ).arg(
             clap::Arg::with_name("gpu")
                 .short("g")
                 .long("gpu")
                 .help("Enable use of the GPU through OpenCL"),
-        )
-        .arg(
+        ).arg(
             clap::Arg::with_name("limit")
                 .short("l")
                 .long("limit")
                 .value_name("N")
                 .default_value("1")
                 .help("Generate N addresses, then exit (0 for infinite)"),
-        )
-        .arg(
+        ).arg(
             clap::Arg::with_name("gpu_threads")
                 .long("gpu-threads")
                 .value_name("N")
                 .default_value("1048576")
                 .help("The number of GPU threads to use"),
-        )
-        .arg(
+        ).arg(
             clap::Arg::with_name("gpu_local_work_size")
                 .long("gpu-local-work-size")
                 .value_name("N")
-                .help("The GPU local work size. A custom value it may increase performance. By default the OpenCL driver is responsible for setting a proper value. Don't use this if you don't know what you are doing."),
-        )
-        .arg(
+                .help("The GPU local work size. Increasing it may increase performance. For advanced users only."),
+        ).arg(
+            clap::Arg::with_name("gpu_global_work-size")
+                .long("gpu-global-work-size")
+                .value_name("N")
+                .help("The GPU global work size. Increasing it may increase performance. For advanced users only."),
+        ).arg(
             clap::Arg::with_name("no_progress")
                 .long("no-progress")
                 .help("Disable progress output"),
-        )
-        .arg(
+        ).arg(
             clap::Arg::with_name("simple_output")
                 .long("simple-output")
                 .help("Output found keys in the form \"[key] [address]\""),
-        )
-        .arg(
+        ).arg(
             clap::Arg::with_name("gpu_platform")
                 .long("gpu-platform")
                 .value_name("INDEX")
                 .default_value("0")
                 .help("The GPU platform to use"),
-        )
-        .arg(
+        ).arg(
             clap::Arg::with_name("gpu_device")
                 .long("gpu-device")
                 .value_name("INDEX")
                 .default_value("0")
                 .help("The GPU device to use"),
-        )
-        .get_matches();
+        ).arg(
+            clap::Arg::with_name("public_offset")
+                .long("public-offset")
+                .conflicts_with("generate_seed")
+                .value_name("HEX")
+                .help(
+                    "The curve point of the blinding factor (used to mine keys for somebody else)",
+                ),
+        ).get_matches();
+    let mut ext_pubkey_req = BigInt::default();
+    let mut ext_pubkey_mask = BigInt::default();
+
 
     let max_length: String = args
-        .value_of("length")
+        .value_of("prefix")
         .unwrap()
         .parse()
         .expect("Failed to parse LENGTH");
 
-    let matcher_base = PubkeyMatcher::new(max_length.clone());
+    if let Some(mut prefix) = args.value_of("prefix") {
+        println!("Prefix, {}", prefix);
+
+        if prefix.starts_with("xrb_") {
+            prefix = &prefix[4..];
+        }
+        if prefix.starts_with("nano_") {
+            prefix = &prefix[5..];
+        }
+        let mut prefix_chars = prefix.chars();
+        let mut prefix_req = BigInt::default();
+        let mut prefix_mask = BigInt::default();
+        for ch in (&mut prefix_chars).chain(iter::repeat('.')).take(60) {
+            let (byte, mask) = char_byte_mask(ch);
+            debug_assert!(byte & !mask == 0);
+            prefix_req = prefix_req << 5;
+            prefix_req = prefix_req + byte;
+            prefix_mask = prefix_mask << 5;
+            prefix_mask = prefix_mask + mask;
+        }
+
+        println!("Prefix char {}", prefix_req);
+        println!("Mask char {}", prefix_mask);
+        println!();
+
+        ext_pubkey_req = prefix_req;
+        ext_pubkey_mask = prefix_mask;
+        if prefix_chars.next().is_some() {
+            eprintln!("Warning: prefix too long.");
+            eprintln!(
+                "Only the first 60 characters of your prefix (not including nano_) will be used."
+            );
+            eprintln!("");
+        }
+    }
+
+    if let Some(suffix) = args.value_of("suffix") {
+        let mut suffix_chars = suffix.chars();
+        let mut suffix_req = BigInt::default();
+        let mut suffix_mask = BigInt::default();
+        for ch in (&mut suffix_chars).take(60) {
+            let (byte, mask) = char_byte_mask(ch);
+            debug_assert!(byte & !mask == 0);
+            suffix_req = suffix_req << 5;
+            suffix_req = suffix_req + byte;
+            suffix_mask = suffix_mask << 5;
+            suffix_mask = suffix_mask + mask;
+        }
+        if ext_pubkey_mask
+            .to_bytes_le()
+            .1
+            .into_iter()
+            .zip(suffix_mask.to_bytes_le().1.into_iter())
+            .any(|(a, b)| a & b != 0)
+        {
+            eprintln!("Error: prefix and suffix restrict the same character position.");
+            eprintln!("Look for duplicate character positions and resolve the conflict.");
+            process::exit(1);
+        }
+        ext_pubkey_req = ext_pubkey_req + suffix_req;
+        ext_pubkey_mask = ext_pubkey_mask + suffix_mask;
+        if suffix_chars.next().is_some() {
+            eprintln!("Warning: suffix too long.");
+            eprintln!("Only the first 60 characters of your suffix will be used.");
+            eprintln!("");
+        }
+    }
+    if ext_pubkey_mask.is_zero() {
+        eprintln!("You must specify a non-empty prefix or suffix");
+        process::exit(1);
+    }
+
+
+//    println!(" Ext_pubkey_req {}", ext_pubkey_req);
+//    println!("Ext_pubkey_mask {}", ext_pubkey_mask);
+//
+//    println!("BigInt ext_pubkey_req {}", ext_pubkey_req);
+//    println!("to_bytes_be {:?}", ext_pubkey_req.to_bytes_be());
+//    println!("to_bytes_be.1 {:?}", ext_pubkey_req.to_bytes_be().1);
+//    println!("to_bytes_be.1 length {:?}", ext_pubkey_req.to_bytes_be().1.len());
+//    println!("=========================================================================================================");
+
+    let mut ext_pubkey_req = ext_pubkey_req.to_bytes_be().1;
+    let mut ext_pubkey_mask = ext_pubkey_mask.to_bytes_be().1;
+
+//    if ext_pubkey_req.len() > 37 {
+//        eprintln!("Error: requested public key required is longer than possible.");
+//        eprintln!("An address can only start with 1 or 3.");
+//        eprintln!(
+//            "To generate the prefix after that, add a period to the beginning of your prefix."
+//        );
+//        process::exit(1);
+//    } else 
+
+    if ext_pubkey_req.len() < 37 {
+        ext_pubkey_req = iter::repeat(0)
+            .take(37 - ext_pubkey_req.len())
+            .chain(ext_pubkey_req.into_iter())
+            .collect();
+    }
+    if ext_pubkey_mask.len() > 37 {
+        let len = ext_pubkey_mask.len();
+        ext_pubkey_mask = ext_pubkey_mask.split_off(len - 37);
+    } else if ext_pubkey_mask.len() < 37 {
+        ext_pubkey_mask = iter::repeat(0)
+            .take(37 - ext_pubkey_mask.len())
+            .chain(ext_pubkey_mask.into_iter())
+            .collect();
+    }
+    let matcher_base = PubkeyMatcher::new(ext_pubkey_req, ext_pubkey_mask, max_length);
     let estimated_attempts = matcher_base.estimated_attempts();
     let matcher_base = Arc::new(matcher_base);
     let limit = args
@@ -262,37 +396,55 @@ fn main() {
     let attempts_base = Arc::new(AtomicUsize::new(0));
     let output_progress = !args.is_present("no_progress");
     let simple_output = args.is_present("simple_output");
-    let _generate_passphrase = args.is_present("generate_passphrase");
-
-    let gen_key_type;
-    if args.is_present("generate_keypair") {
-        gen_key_type = GenerateKeyType::PrivateKey;
+    let generate_seed = args.is_present("generate_seed");
+    let public_offset_bytes = args.value_of("public_offset").map(hex::decode).map(|r| {
+        let bytes = r.expect("Failed to parse public offset as hex");
+        if bytes.len() != 32 {
+            panic!(
+                "Public offset length was {} bytes, not 32 bytes as expected",
+                bytes.len(),
+            );
+        }
+        let mut slice = [0u8; 32];
+        slice.copy_from_slice(&bytes);
+        slice
+    });
+    let public_offset = public_offset_bytes.map(|b| {
+        CompressedEdwardsY(b)
+            .decompress()
+            .expect("Public offset was not valid edwards curve point")
+    });
+    let gen_key_ty = if let Some(offset) = public_offset {
+        GenerateKeyType::ExtendedPrivateKey(offset)
+    } else if generate_seed {
+        GenerateKeyType::Seed
     } else {
-        gen_key_type = GenerateKeyType::LiskPassphrase;
-    }
-
-    let cpu_threads = args
-        .value_of("cpu_threads")
+        println!("Yolo, this is me in private");
+        GenerateKeyType::PrivateKey
+    };
+    let threads = args
+        .value_of("threads")
         .map(|s| s.parse().expect("Failed to parse thread count option"))
         .unwrap_or_else(|| num_cpus::get() - 1);
-    let mut thread_handles = Vec::with_capacity(cpu_threads);
-    eprintln!("Estimated attempts needed: {}", estimated_attempts);
-    for _ in 0..cpu_threads {
-        let mut rng = OsRng::new().expect("Failed to get RNG for seed");
+    let mut thread_handles = Vec::with_capacity(threads);
+    if !simple_output {
+        eprintln!("Estimated attempts needed: {}", estimated_attempts);
+    }
+    for _ in 0..threads {
         let mut key_or_seed = [0u8; 32];
-        rng.fill_bytes(&mut key_or_seed);
+        OsRng.fill_bytes(&mut key_or_seed);
         let params = ThreadParams {
             limit,
             output_progress,
             simple_output,
-            generate_key_type: gen_key_type.clone(),
+            generate_key_type: gen_key_ty.clone(),
             matcher: matcher_base.clone(),
             found_n: found_n_base.clone(),
             attempts: attempts_base.clone(),
         };
         thread_handles.push(thread::spawn(move || loop {
             if check_solution(&params, key_or_seed) {
-                rng.fill_bytes(&mut key_or_seed);
+                OsRng.fill_bytes(&mut key_or_seed);
             } else {
                 if output_progress {
                     params.attempts.fetch_add(1, atomic::Ordering::Relaxed);
@@ -327,47 +479,53 @@ fn main() {
             s.parse()
                 .expect("Failed to parse GPU local work size option")
         });
+        let gpu_global_work_size = args.value_of("gpu_global_work_size").map(|s| {
+            s.parse()
+                .expect("Failed to parse GPU local work size option")
+        });
         let mut key_base = [0u8; 32];
         let params = ThreadParams {
             limit,
             output_progress,
             simple_output,
-            generate_key_type: gen_key_type.clone(),
+            generate_key_type: gen_key_ty.clone(),
             matcher: matcher_base.clone(),
             found_n: found_n_base.clone(),
             attempts: attempts_base.clone(),
         };
-        let mut gpu = Gpu::new(
-            gpu_platform,
-            gpu_device,
-            gpu_threads,
-            gpu_local_work_size,
-            max_address(max_length.len()),
-            gen_key_type,
-        )
+        let mut gpu = Gpu::new(GpuOptions {
+            platform_idx: gpu_platform,
+            device_idx: gpu_device,
+            threads: gpu_threads,
+            local_work_size: gpu_local_work_size,
+            global_work_size: gpu_global_work_size,
+            matcher: &params.matcher,
+            generate_key_type: gen_key_ty,
+        })
         .unwrap();
         gpu_thread = Some(thread::spawn(move || {
-            let mut rng = OsRng::new().expect("Failed to get RNG for seed");
+            let mut found_private_key = [0u8; 32];
             loop {
-                rng.fill_bytes(&mut key_base);
+                OsRng.fill_bytes(&mut key_base);
                 let found = gpu
-                    .compute(&key_base)
+                    .compute(&mut found_private_key as _, &key_base as _)
                     .expect("Failed to run GPU computation");
                 if output_progress {
                     params
                         .attempts
                         .fetch_add(gpu_threads, atomic::Ordering::Relaxed);
                 }
-
-                if let Some(found_private_key) = found {
-                    if !check_solution(&params, found_private_key) {
-                        eprintln!(
-                            "GPU returned non-matching solution: {}",
-                            hex::encode_upper(&found_private_key)
-                        );
-                    }
-                } else {
-                    // just continue
+                if !found {
+                    continue;
+                }
+                if !check_solution(&params, found_private_key) {
+                    eprintln!(
+                        "GPU returned non-matching solution: {}",
+                        hex::encode_upper(&found_private_key),
+                    );
+                }
+                for byte in &mut found_private_key {
+                    *byte = 0;
                 }
             }
         }));
@@ -387,7 +545,7 @@ fn main() {
                 "\rTried {} keys (~{:.2}%; {:.1} keys/s)",
                 attempts, estimated_percent, keys_per_second,
             );
-            thread::sleep(Duration::from_millis(100));
+            thread::sleep(Duration::from_millis(250));
         });
     }
     if let Some(gpu_thread) = gpu_thread {
