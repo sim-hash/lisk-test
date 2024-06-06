@@ -110,10 +110,11 @@ struct ThreadParams {
 fn check_solution(params: &ThreadParams, key_material: [u8; 32]) -> bool {
     let public_key = secret_to_pubkey(key_material, params.generate_key_type);
 
+    let matches = params.matcher.matches_test(public_key);
     let wallet = Account::from_seed(key_material);
 
-    let matches = params.matcher.starts_with(wallet.address().to_string());
-    if matches {
+    if params.matcher.starts_with(wallet.address().to_string()) {
+
         println!();
         println!(
             "Found matching account!\nPrivate Key: {:?} \nAddress: {} \nMnemonic: {}",
@@ -123,23 +124,10 @@ fn check_solution(params: &ThreadParams, key_material: [u8; 32]) -> bool {
         );
         println!();
 
-//        println!(" BEGIN  ============================================================================");
-//        println!("\n");
-//        println!("Public key {:?}", public_key);
-//        println!("Found matching account!\nPrivate Key: {:?} \nAddress: {} \nMnemonic: {}", wallet.seed(), wallet.address(), wallet.mnemonic());
-//        println!("\n");
-//        println!(" END    ============================================================================");
-//
         if params.output_progress {
             eprintln!("");
         }
-        
-//        print_solution(
-//            key_material,
-//            params.generate_key_type,
-//            public_key,
-//            params.simple_output,
-//        );
+
         if params.limit != 0
             && params.found_n.fetch_add(1, atomic::Ordering::Relaxed) + 1 >= params.limit
         {

@@ -79,7 +79,7 @@ pub fn pubkey_to_address(pubkey: [u8; 32]) -> String {
         .map(|&c| c as char)
         .collect::<String>();
 
-    println!("Reverse {:?}", yolo);
+    //println!("Reverse {:?}", yolo);
 
     reverse_chars.extend(b"_onan"); // nano_ reversed
     reverse_chars
