@@ -355,7 +355,7 @@ fn main() {
 //            "To generate the prefix after that, add a period to the beginning of your prefix."
 //        );
 //        process::exit(1);
-//    } else 
+//    } else
 
     if ext_pubkey_req.len() < 37 {
         ext_pubkey_req = iter::repeat(0)
