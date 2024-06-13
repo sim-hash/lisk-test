@@ -1,4 +1,4 @@
-use std::cmp;
+use std::{cmp, io::Read};
 
 use blake2::VarBlake2b;
 use digest::{Update, VariableOutput};
@@ -49,8 +49,13 @@ impl PubkeyMatcher {
     pub fn new(mut req: Vec<u8>, mut mask: Vec<u8>, prefix: String) -> PubkeyMatcher {
 
         let prefix_decoded = base32::decode(base32::Alphabet::RFC4648 { padding: (true) }, &prefix).unwrap();
-        //        println!("Pub-Key byte prefix is: {:?}", prefix_decoded);
-        //        println!("prefix is: {:?}", prefix);
+        println!("Pub-Key byte prefix is: {:?}", prefix_decoded);
+        println!("Pub-Key byte prefix is in bytes: {:?}", prefix_decoded.bytes());
+        println!("prefix is: {:?}", prefix);
+
+        for character in &prefix_decoded {
+            println!("{}, is {:?}", character, format!("0{:b} ", character));
+        }
 
 
 
@@ -90,8 +95,6 @@ impl PubkeyMatcher {
     }
 
     pub fn starts_with(&self, address: String) -> bool {
-//        println!("Address {}", address);
-//        println!("Address {}", self.prefix);
         address.starts_with(&self.prefix)
     }
 

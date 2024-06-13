@@ -59,6 +59,10 @@ pub fn secret_to_pubkey(key_material: [u8; 32], generate_key_type: GenerateKeyTy
 
 /// Only used when outputting addresses to user. Not for speed.
 pub fn pubkey_to_address(pubkey: [u8; 32]) -> String {
+
+    println!("=========================================================================================================");
+    println!("pub key {:?}", pubkey);
+    println!("=========================================================================================================");
     let mut reverse_chars = Vec::<u8>::new();
     let mut check_hash = VarBlake2b::new(5).unwrap();
     check_hash.update(&pubkey);
@@ -81,7 +85,6 @@ pub fn pubkey_to_address(pubkey: [u8; 32]) -> String {
 
     //println!("Reverse {:?}", yolo);
 
-    reverse_chars.extend(b"_onan"); // nano_ reversed
     reverse_chars
         .iter()
         .rev()

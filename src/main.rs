@@ -108,16 +108,24 @@ struct ThreadParams {
 }
 
 fn check_solution(params: &ThreadParams, key_material: [u8; 32]) -> bool {
+//    let public_key = secret_to_pubkey(key_material, params.generate_key_type);
+//
+//    let matches = params.matcher.matches_test(public_key);
+//    let wallet = Account::from_seed(key_material);
+//
+//    if params.matcher.starts_with(wallet.address().to_string()) {
+
+
     let public_key = secret_to_pubkey(key_material, params.generate_key_type);
+    let matches = params.matcher.matches(&public_key);
+    println!("Yo, it's me {}", matches);
+    if matches {
 
-    let matches = params.matcher.matches_test(public_key);
-    let wallet = Account::from_seed(key_material);
 
-    if params.matcher.starts_with(wallet.address().to_string()) {
-
-        println!();
+        let wallet = Account::from_seed(key_material);
+        println!("{:?}", key_material);
         println!(
-            "Found matching account!\nPrivate Key: {:?} \nAddress: {} \nMnemonic: {}",
+            "Algorand found matching account!\nPrivate Key: {:?} \nAddress: {} \nMnemonic: {}",
             wallet.seed(),
             wallet.address(),
             wallet.mnemonic()
@@ -128,11 +136,20 @@ fn check_solution(params: &ThreadParams, key_material: [u8; 32]) -> bool {
             eprintln!("");
         }
 
+        print_solution(
+            key_material,
+            params.generate_key_type,
+            public_key,
+            params.simple_output,
+        );
+
         if params.limit != 0
             && params.found_n.fetch_add(1, atomic::Ordering::Relaxed) + 1 >= params.limit
         {
             process::exit(0);
         }
+    } else {
+        println!("Here {}", matches);
     }
     matches
 }
@@ -140,17 +157,24 @@ fn check_solution(params: &ThreadParams, key_material: [u8; 32]) -> bool {
 
 //fn check_solution(params: &ThreadParams, key_material: [u8; 32]) -> bool {
 //    let public_key = secret_to_pubkey(key_material, params.generate_key_type);
+//
+////    println!("\nKey material {:?}", key_material);
+////    println!("\nKey material hex {:?}", hex::encode_upper(key_material));
 //    let matches = params.matcher.matches(&public_key);
 //
 //    let wallet = Account::from_seed(key_material);
+//
+////    println!("\nAddress {}", wallet.address());
 //    if params.matcher.starts_with(wallet.address().to_string()) {
 //
-//        println!("============================================================================");
-//        println!("\n");
-//        println!("Public key {:?}", public_key);
-//        println!("Found matching account!\nPrivate Key: {:?} \nAddress: {} \nMnemonic: {}", wallet.seed(), wallet.address(), wallet.mnemonic());
-//        println!("\n");
-//        println!("============================================================================");
+//        println!();
+//        println!(
+//            "Found matching account!\nPrivate Key: {:?} \nAddress: {} \nMnemonic: {}",
+//            wallet.seed(),
+//            wallet.address(),
+//            wallet.mnemonic()
+//        );
+//        println!();
 //
 //        if params.output_progress {
 //            eprintln!("");
@@ -256,12 +280,12 @@ fn main() {
     let mut ext_pubkey_req = BigInt::default();
     let mut ext_pubkey_mask = BigInt::default();
 
-
     let max_length: String = args
         .value_of("prefix")
         .unwrap()
         .parse()
         .expect("Failed to parse LENGTH");
+
 
     if let Some(mut prefix) = args.value_of("prefix") {
         println!("Prefix, {}", prefix);
@@ -431,6 +455,7 @@ fn main() {
             attempts: attempts_base.clone(),
         };
         thread_handles.push(thread::spawn(move || loop {
+            println!("Threads....");
             if check_solution(&params, key_or_seed) {
                 OsRng.fill_bytes(&mut key_or_seed);
             } else {
@@ -498,15 +523,18 @@ fn main() {
                 let found = gpu
                     .compute(&mut found_private_key as _, &key_base as _)
                     .expect("Failed to run GPU computation");
+
                 if output_progress {
                     params
                         .attempts
                         .fetch_add(gpu_threads, atomic::Ordering::Relaxed);
                 }
                 if !found {
+                    //println!("\nYolo, found ....................==============================================================");
                     continue;
                 }
                 if !check_solution(&params, found_private_key) {
+                    println!("\nCheck solution gpu thread ....................==============================================================");
                     eprintln!(
                         "GPU returned non-matching solution: {}",
                         hex::encode_upper(&found_private_key),

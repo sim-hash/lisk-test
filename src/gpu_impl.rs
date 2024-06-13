@@ -92,6 +92,10 @@ impl Gpu {
                 2
             }
         };
+        println!("Req {}", &req);
+        println!("Mask {}", &mask);
+        println!("Prefix len {}", opts.matcher.prefix_len());
+
 
         let kernel = {
             let mut kernel_builder = pro_que.kernel_builder("generate_pubkey");
