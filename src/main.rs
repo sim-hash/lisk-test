@@ -148,7 +148,7 @@ fn check_solution(params: &ThreadParams, key_material: [u8; 32]) -> bool {
             process::exit(0);
         }
     } else {
-        println!("Here {}", matches);
+     //   println!("Here {}", matches);
     }
     matches
 }
@@ -433,43 +433,6 @@ fn main() {
         println!("Yolo, this is me in private");
         GenerateKeyType::PrivateKey
     };
-    let threads = args
-        .value_of("threads")
-        .map(|s| s.parse().expect("Failed to parse thread count option"))
-        .unwrap_or_else(|| num_cpus::get() - 1);
-    let mut thread_handles = Vec::with_capacity(threads);
-    if !simple_output {
-        eprintln!("Estimated attempts needed: {}", estimated_attempts);
-    }
-    for _ in 0..threads {
-        let mut key_or_seed = [0u8; 32];
-        OsRng.fill_bytes(&mut key_or_seed);
-        let params = ThreadParams {
-            limit,
-            output_progress,
-            simple_output,
-            generate_key_type: gen_key_ty.clone(),
-            matcher: matcher_base.clone(),
-            found_n: found_n_base.clone(),
-            attempts: attempts_base.clone(),
-        };
-        thread_handles.push(thread::spawn(move || loop {
-            println!("Threads....");
-            if check_solution(&params, key_or_seed) {
-                OsRng.fill_bytes(&mut key_or_seed);
-            } else {
-                if output_progress {
-                    params.attempts.fetch_add(1, atomic::Ordering::Relaxed);
-                }
-                for byte in key_or_seed.iter_mut().rev() {
-                    *byte = byte.wrapping_add(1);
-                    if *byte != 0 {
-                        break;
-                    }
-                }
-            }
-        }));
-    }
     let mut gpu_thread = None;
     if args.is_present("gpu") {
         let gpu_platform = args
@@ -565,9 +528,6 @@ fn main() {
     }
     if let Some(gpu_thread) = gpu_thread {
         gpu_thread.join().expect("Failed to join GPU thread");
-    }
-    for handle in thread_handles {
-        handle.join().expect("Failed to join thread");
     }
     eprintln!("No computation devices specified");
     process::exit(1);
