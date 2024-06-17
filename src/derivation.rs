@@ -87,7 +87,7 @@ pub fn pubkey_to_address(pubkey: [u8; 32]) -> String {
 
     reverse_chars
         .iter()
-        .rev()
+//        .rev()
         .map(|&c| c as char)
         .collect::<String>()
 }

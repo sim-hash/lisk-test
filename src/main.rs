@@ -118,7 +118,6 @@ fn check_solution(params: &ThreadParams, key_material: [u8; 32]) -> bool {
 
     let public_key = secret_to_pubkey(key_material, params.generate_key_type);
     let matches = params.matcher.matches(&public_key);
-    println!("Yo, it's me {}", matches);
     if matches {
 
 
@@ -281,47 +280,47 @@ fn main() {
     let mut ext_pubkey_mask = BigInt::default();
 
     let max_length: String = args
-        .value_of("prefix")
+        .value_of("prefix").or(args.value_of("suffix"))
         .unwrap()
         .parse()
         .expect("Failed to parse LENGTH");
 
 
-    if let Some(mut prefix) = args.value_of("prefix") {
-        println!("Prefix, {}", prefix);
-
-        if prefix.starts_with("xrb_") {
-            prefix = &prefix[4..];
-        }
-        if prefix.starts_with("nano_") {
-            prefix = &prefix[5..];
-        }
-        let mut prefix_chars = prefix.chars();
-        let mut prefix_req = BigInt::default();
-        let mut prefix_mask = BigInt::default();
-        for ch in (&mut prefix_chars).chain(iter::repeat('.')).take(60) {
-            let (byte, mask) = char_byte_mask(ch);
-            debug_assert!(byte & !mask == 0);
-            prefix_req = prefix_req << 5;
-            prefix_req = prefix_req + byte;
-            prefix_mask = prefix_mask << 5;
-            prefix_mask = prefix_mask + mask;
-        }
-
-        println!("Prefix char {}", prefix_req);
-        println!("Mask char {}", prefix_mask);
-        println!();
-
-        ext_pubkey_req = prefix_req;
-        ext_pubkey_mask = prefix_mask;
-        if prefix_chars.next().is_some() {
-            eprintln!("Warning: prefix too long.");
-            eprintln!(
-                "Only the first 60 characters of your prefix (not including nano_) will be used."
-            );
-            eprintln!("");
-        }
-    }
+//    if let Some(mut prefix) = args.value_of("prefix") {
+//        println!("Prefix, {}", prefix);
+//
+//        if prefix.starts_with("xrb_") {
+//            prefix = &prefix[4..];
+//        }
+//        if prefix.starts_with("nano_") {
+//            prefix = &prefix[5..];
+//        }
+//        let mut prefix_chars = prefix.chars();
+//        let mut prefix_req = BigInt::default();
+//        let mut prefix_mask = BigInt::default();
+//        for ch in (&mut prefix_chars).chain(iter::repeat('.')).take(60) {
+//            let (byte, mask) = char_byte_mask(ch);
+//            debug_assert!(byte & !mask == 0);
+//            prefix_req = prefix_req << 5;
+//            prefix_req = prefix_req + byte;
+//            prefix_mask = prefix_mask << 5;
+//            prefix_mask = prefix_mask + mask;
+//        }
+//
+//        println!("Prefix char {}", prefix_req);
+//        println!("Mask char {}", prefix_mask);
+//        println!();
+//
+//        ext_pubkey_req = prefix_req;
+//        ext_pubkey_mask = prefix_mask;
+//        if prefix_chars.next().is_some() {
+//            eprintln!("Warning: prefix too long.");
+//            eprintln!(
+//                "Only the first 60 characters of your prefix (not including nano_) will be used."
+//            );
+//            eprintln!("");
+//        }
+//    }
 
     if let Some(suffix) = args.value_of("suffix") {
         let mut suffix_chars = suffix.chars();
